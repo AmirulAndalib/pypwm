@@ -81,7 +81,7 @@ try:
     while True:
         # Get CPU temperature
         temp = subprocess.getoutput("vcgencmd measure_temp|sed 's/[^0-9.]//g'")
-        
+
         # Temperature control logic with hysteresis
         if round(float(temp)) >= temp_threshold_high + hysteresis:
             dc = 100
@@ -91,6 +91,17 @@ try:
             dc = 75
         elif round(float(temp)) >= temp_threshold_low_2 + hysteresis:
             dc = 60
+        else:
+            dc = 40
+
+        # Dynamic Fan Control based on system load
+        system_load = psutil.cpu_percent()
+        if system_load > 80:
+            dc = 100
+        elif system_load > 60:
+            dc = 85
+        elif system_load > 40:
+            dc = 75
         else:
             dc = 40
 
@@ -105,7 +116,6 @@ try:
             time.sleep(1.0)
 
         # Log temperature, fan duty cycle, system load
-        system_load = psutil.cpu_percent()
         log_entry = (
             f"CPU Temp is: {float(temp)}°C, Fan speed is: {dc}%, Load is: {system_load}%"
         )
@@ -115,16 +125,6 @@ try:
         if dc == 0:
             logger.info("Fan failure detected! Check the fan.")
             # Take corrective action, e.g., turn off the system or send an alert
-
-        # Dynamic Fan Control based on system load
-        if system_load > 80:
-            dc = 100
-        elif system_load > 60:
-            dc = 85
-        elif system_load > 40:
-            dc = 75
-        else:
-            dc = 40
 
         # Sleep for a specific duration
         time.sleep(60.0)
