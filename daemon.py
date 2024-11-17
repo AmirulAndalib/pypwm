@@ -430,21 +430,32 @@ class FanController:
         """Set up logging"""
         logger = logging.getLogger('FanController')
         logger.setLevel(logging.DEBUG)
-        # Create file handler
-        log_path = os.path.join(BASE_DIR, 'fan_controller.log')
-        fh = logging.handlers.RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=2)
-        fh.setLevel(logging.DEBUG)
-        # Create console handler
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
-        # Create formatter
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        # Add formatter to handlers
-        fh.setFormatter(formatter)
-        ch.setFormatter(formatter)
+
+        # File handler for info logs
+        info_log_path = os.path.join(BASE_DIR, 'daemon.log')
+        info_handler = logging.handlers.RotatingFileHandler(info_log_path, maxBytes=5*1024*1024, backupCount=2)
+        info_handler.setLevel(logging.INFO)
+        info_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        info_handler.setFormatter(info_formatter)
+
+        # File handler for error logs
+        error_log_path = os.path.join(BASE_DIR, 'daemon.error.log')
+        error_handler = logging.handlers.RotatingFileHandler(error_log_path, maxBytes=5*1024*1024, backupCount=2)
+        error_handler.setLevel(logging.ERROR)
+        error_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        error_handler.setFormatter(error_formatter)
+
+        # Console handler for real-time info
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+
         # Add handlers to logger
-        logger.addHandler(fh)
-        logger.addHandler(ch)
+        logger.addHandler(info_handler)
+        logger.addHandler(error_handler)
+        logger.addHandler(console_handler)
+
         return logger
 
     def _setup_signal_handlers(self):
