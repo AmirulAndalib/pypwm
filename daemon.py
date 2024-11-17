@@ -24,6 +24,9 @@ import socketserver
 from queue import Queue
 import os
 
+# Define base directory
+BASE_DIR = "/home/amirulandalib/Scripts/pypwm/"
+
 @dataclass
 class TempThresholds:
     """Temperature thresholds configuration"""
@@ -45,7 +48,7 @@ class MetricsData:
 
 class DataCollector:
     """Collect and store system metrics"""
-    def __init__(self, db_path: str = "/home/amirulandalib/Scripts/pypwm/metrics.db"):
+    def __init__(self, db_path: str = os.path.join(BASE_DIR, "metrics.db")):
         self.db_path = db_path
         self._init_database()
         self.metrics_queue = Queue()
@@ -147,7 +150,7 @@ class FanController:
         self.thresholds = TempThresholds()
         
         # Configuration
-        self.config_path = Path("/home/amirulandalib/Scripts/pypwm/config.json")
+        self.config_path = Path(os.path.join(BASE_DIR, "config.json"))
         self.load_config()
         
         # Metrics collection
@@ -215,7 +218,7 @@ class FanController:
         """Start HTTP monitoring server"""
         def run_server():
             handler = lambda *args: StatusServer(*args, fan_controller=self)
-            with socketserver.TCPServer(("", 8000), handler) as httpd:
+            with socketserver.TCPServer(("", 8999), handler) as httpd:
                 httpd.serve_forever()
 
         server_thread = threading.Thread(target=run_server, daemon=True)
@@ -240,7 +243,7 @@ class FanController:
         <html>
             <head>
                 <title>Fan Control Status</title>
-                <meta refresh="5">
+                <meta http-equiv="refresh" content="5">
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 20px; }}
                     .metric {{ margin: 10px; padding: 10px; border: 1px solid #ccc; }}
@@ -382,6 +385,103 @@ class FanController:
                 self.performance_stats['total_runtime'] = datetime.now() - self.performance_stats['start_time']
                 
                 time.sleep(5.0)
+
+    def get_cpu_temp(self) -> float:
+        """Get CPU temperature"""
+        temps = psutil.sensors_temperatures()
+        if 'cpu-thermal' in temps:
+            temp = temps['cpu-thermal'][0].current
+        else:
+            # Handle for other platforms or sensor labels
+            temp = temps.get('coretemp', [{'current': 0}])[0]['current']
+        return temp
+
+    def calculate_fan_speed(self, temp: float, load: float) -> int:
+        """Calculate desired fan speed based on temperature and load"""
+        if temp >= self.thresholds.high:
+            return 100
+        elif temp >= self.thresholds.medium:
+            return 75
+        elif temp >= self.thresholds.low_1:
+            return 50
+        elif temp >= self.thresholds.low_2:
+            return 25
+        else:
+            return 0
+
+    def ramp_to_speed(self, target_dc: int):
+        """Gradually adjust fan speed to target duty cycle"""
+        step = 1 if target_dc > self.current_dc else -1
+        for dc in range(self.current_dc, target_dc, step):
+            self.pwm.ChangeDutyCycle(dc)
+            self.current_dc = dc
+            time.sleep(0.05)
+        # Ensure target duty cycle is set
+        self.pwm.ChangeDutyCycle(target_dc)
+        self.current_dc = target_dc
+
+    def _setup_gpio(self):
+        """Set up GPIO for PWM control"""
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(self.gpio_pin, GPIO.OUT)
+        self.pwm = GPIO.PWM(self.gpio_pin, self.pwm_freq)
+        self.pwm.start(0)
+
+    def _setup_logging(self):
+        """Set up logging"""
+        logger = logging.getLogger('FanController')
+        logger.setLevel(logging.DEBUG)
+        # Create file handler
+        log_path = os.path.join(BASE_DIR, 'fan_controller.log')
+        fh = logging.handlers.RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=2)
+        fh.setLevel(logging.DEBUG)
+        # Create console handler
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        # Create formatter
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        # Add formatter to handlers
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+        # Add handlers to logger
+        logger.addHandler(fh)
+        logger.addHandler(ch)
+        return logger
+
+    def _setup_signal_handlers(self):
+        """Set up signal handlers for graceful shutdown"""
+        signal.signal(signal.SIGTERM, self._handle_exit)
+        signal.signal(signal.SIGINT, self._handle_exit)
+        atexit.register(self.cleanup)
+
+    def _handle_exit(self, signum, frame):
+        """Handle exit signal"""
+        self.logger.info("Shutting down...")
+        self.running = False
+        sys.exit(0)
+
+    def cleanup(self):
+        """Cleanup resources"""
+        self.pwm.stop()
+        GPIO.cleanup()
+        self.logger.info("GPIO cleaned up.")
+
+    def perform_initial_test(self):
+        """Perform initial test cycle"""
+        self.logger.info("Performing initial fan test.")
+        self.ramp_to_speed(100)
+        time.sleep(1)
+        self.ramp_to_speed(0)
+        self.logger.info("Initial fan test completed.")
+
+    @contextmanager
+    def error_handling(self):
+        """Context manager for error handling"""
+        try:
+            yield
+        except Exception as e:
+            self.logger.error(f"An error occurred: {e}")
+            self.handle_emergency("Unexpected error")
 
 if __name__ == "__main__":
     controller = FanController()
