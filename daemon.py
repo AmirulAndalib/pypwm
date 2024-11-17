@@ -23,9 +23,12 @@ import http.server
 import socketserver
 from queue import Queue
 import os
+from dotenv import load_dotenv
 
-# Define base directory
-BASE_DIR = "/home/amirulandalib/Scripts/pypwm/"
+# Load environment variables from .env file
+load_dotenv()
+BASE_DIR = os.getenv('BASE_DIR')
+PORT = int(os.getenv('PORT'))
 
 @dataclass
 class TempThresholds:
@@ -59,7 +62,7 @@ class DataCollector:
         """Initialize SQLite database"""
         db_dir = Path(self.db_path).parent
         db_dir.mkdir(parents=True, exist_ok=True)
-        
+
         with self._get_db_connection() as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS metrics (
@@ -109,7 +112,7 @@ class DataCollector:
         """Get metrics for the last n hours"""
         with self._get_db_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM metrics 
+                SELECT * FROM metrics
                 WHERE timestamp > datetime('now', ?)
                 ORDER BY timestamp DESC
             ''', (f'-{hours} hours',))
@@ -128,16 +131,16 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            
+
             metrics = self.fan_controller.get_current_metrics()
             self.wfile.write(json.dumps(metrics).encode())
         elif self.path == '/status':
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
-            
+
             status_html = self.fan_controller.get_status_page()
-            self.wfile.write(status_html.encode())
+            self.wfile.write(status_html.encode('utf-8'))
         else:
             self.send_error(404)
 
@@ -148,32 +151,32 @@ class FanController:
         self.current_dc = 0
         self.running = True
         self.thresholds = TempThresholds()
-        
+
         # Configuration
         self.config_path = Path(os.path.join(BASE_DIR, "config.json"))
         self.load_config()
-        
+
         # Metrics collection
         self.data_collector = DataCollector()
         self.temp_history: List[float] = []
         self.speed_history: List[int] = []
-        
+
         # Set up logging
         self.logger = self._setup_logging()
-        
+
         # GPIO setup
         self._setup_gpio()
-        
+
         # Setup signal handlers
         self._setup_signal_handlers()
-        
+
         # Start monitoring server
         self.start_monitoring_server()
-        
+
         # Initialize maintenance timer
         self._last_maintenance = datetime.now()
         self.maintenance_interval = timedelta(days=30)
-        
+
         # Performance metrics
         self.performance_stats = {
             'start_time': datetime.now(),
@@ -218,7 +221,7 @@ class FanController:
         """Start HTTP monitoring server"""
         def run_server():
             handler = lambda *args: StatusServer(*args, fan_controller=self)
-            with socketserver.TCPServer(("", 8999), handler) as httpd:
+            with socketserver.TCPServer(("", PORT), handler) as httpd:
                 httpd.serve_forever()
 
         server_thread = threading.Thread(target=run_server, daemon=True)
@@ -238,12 +241,13 @@ class FanController:
     def get_status_page(self) -> str:
         """Generate HTML status page"""
         metrics = self.get_current_metrics()
-        
+
         return f"""
         <html>
             <head>
                 <title>Fan Control Status</title>
                 <meta http-equiv="refresh" content="5">
+                <meta charset="UTF-8">
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 20px; }}
                     .metric {{ margin: 10px; padding: 10px; border: 1px solid #ccc; }}
@@ -272,28 +276,28 @@ class FanController:
             self.logger.info("Scheduled maintenance check required")
             self.performance_stats['maintenance_performed'] += 1
             self._last_maintenance = datetime.now()
-            
+
             # Perform maintenance test cycle
             self.perform_maintenance_cycle()
 
     def perform_maintenance_cycle(self):
         """Perform maintenance test cycle"""
         self.logger.info("Starting maintenance cycle")
-        
+
         # Store current speed
         original_speed = self.current_dc
-        
+
         # Test full range of motion
         test_speeds = [0, 25, 50, 75, 100, 75, 50, 25, 0]
         for speed in test_speeds:
             self.ramp_to_speed(speed)
             time.sleep(2)
-            
+
             # Check if fan responds correctly
             if abs(self.current_dc - speed) > 5:
                 self.logger.error(f"Fan not responding correctly at {speed}% speed")
                 # Could add notification here
-        
+
         # Restore original speed
         self.ramp_to_speed(original_speed)
         self.logger.info("Maintenance cycle completed")
@@ -303,10 +307,10 @@ class FanController:
         if len(self.temp_history) > 100:
             avg_temp = statistics.mean(self.temp_history[-100:])
             temp_std = statistics.stdev(self.temp_history[-100:])
-            
+
             if avg_temp > self.thresholds.high:
                 self.logger.warning(f"High average temperature: {avg_temp:.1f}°C")
-            
+
             # Check for temperature instability
             if temp_std > 5.0:
                 self.logger.warning(f"Unstable temperature patterns detected (std: {temp_std:.1f})")
@@ -315,13 +319,13 @@ class FanController:
         """Handle emergency situations"""
         self.logger.error(f"Emergency situation: {reason}")
         self.performance_stats['emergency_shutdowns'] += 1
-        
+
         # Set fan to maximum speed
         self.ramp_to_speed(100)
-        
+
         # Could add notification system here
         # self.send_notification(f"Emergency: {reason}")
-        
+
         # Wait for temperature to stabilize
         while self.get_cpu_temp() > self.thresholds.high:
             time.sleep(5)
@@ -329,7 +333,7 @@ class FanController:
     def run(self):
         """Main control loop"""
         self.perform_initial_test()
-        
+
         with self.error_handling():
             while self.running:
                 # Get system metrics
@@ -337,16 +341,16 @@ class FanController:
                 system_load = psutil.cpu_percent()
                 memory_usage = psutil.virtual_memory().percent
                 disk_usage = psutil.disk_usage('/').percent
-                
+
                 # Store metrics
                 self.temp_history.append(temp)
                 self.speed_history.append(self.current_dc)
-                
+
                 # Keep history limited
                 if len(self.temp_history) > 1000:
                     self.temp_history = self.temp_history[-1000:]
                     self.speed_history = self.speed_history[-1000:]
-                
+
                 # Store metrics in database
                 metrics = MetricsData(
                     timestamp=datetime.now(),
@@ -357,57 +361,52 @@ class FanController:
                     disk_usage=disk_usage
                 )
                 self.data_collector.add_metrics(metrics)
-                
+
                 # Calculate target speed
                 target_dc = self.calculate_fan_speed(temp, system_load)
-                
+
                 # Update fan speed if needed
                 if target_dc != self.current_dc:
                     self.ramp_to_speed(target_dc)
-                
+
                 # Log current status
                 self.logger.info(
                     f"CPU Temp: {temp:.1f}°C, Fan speed: {self.current_dc}%, "
                     f"System load: {system_load:.1f}%, Memory: {memory_usage:.1f}%"
                 )
-                
+
                 # Check for potential issues
                 if temp > self.thresholds.high + 10:
                     self.handle_emergency("Critical temperature detected")
-                
+
                 # Analyze temperature trends
                 self.analyze_temperature_trends()
-                
+
                 # Check for maintenance
                 self.check_maintenance()
-                
+
                 # Update performance stats
                 self.performance_stats['total_runtime'] = datetime.now() - self.performance_stats['start_time']
-                
+
                 time.sleep(5.0)
 
     def get_cpu_temp(self) -> float:
         """Get CPU temperature"""
-        temps = psutil.sensors_temperatures()
-        if 'cpu-thermal' in temps:
-            temp = temps['cpu-thermal'][0].current
-        else:
-            # Handle for other platforms or sensor labels
-            temp = temps.get('coretemp', [{'current': 0}])[0]['current']
-        return temp
+        temp = subprocess.getoutput("vcgencmd measure_temp|sed 's/[^0-9.]//g'")
+        return float(temp)
 
     def calculate_fan_speed(self, temp: float, load: float) -> int:
         """Calculate desired fan speed based on temperature and load"""
-        if temp >= self.thresholds.high:
+        if temp >= self.thresholds.high or load >= 90:
             return 100
-        elif temp >= self.thresholds.medium:
+        elif temp >= self.thresholds.medium or load >= 70:
+            return 85
+        elif temp >= self.thresholds.low_1 or load >= 50:
             return 75
-        elif temp >= self.thresholds.low_1:
-            return 50
-        elif temp >= self.thresholds.low_2:
-            return 25
+        elif temp >= self.thresholds.low_2 or load >= 30:
+            return 60
         else:
-            return 0
+            return 40
 
     def ramp_to_speed(self, target_dc: int):
         """Gradually adjust fan speed to target duty cycle"""

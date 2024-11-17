@@ -13,6 +13,9 @@ python-dateutil
 # Statistics and data analysis
 statistics
 
+# .env file support
+python-dotenv
+
 # Optional - for advanced features
 #requests>=2.31.0,<3.0.0  # For future notification features
 #aiohttp>=3.8.5,<4.0.0    # For async web features
