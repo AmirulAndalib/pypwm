@@ -1,2 +1,25 @@
+# Core system monitoring
 psutil
+
+# GPIO control
 RPi.GPIO
+
+# Database
+sqlite3-api
+
+# Date and time handling
+python-dateutil
+
+# Statistics and data analysis
+statistics
+
+# Optional - for advanced features
+#requests>=2.31.0,<3.0.0  # For future notification features
+#aiohttp>=3.8.5,<4.0.0    # For async web features
+#pandas>=2.0.3,<3.0.0     # For advanced data analysis
+
+# Development dependencies
+#pytest>=7.4.0,<8.0.0     # For testing
+#black>=23.7.0,<24.0.0    # For code formatting
+#mypy>=1.5.1,<2.0.0       # For type checking
+#pylint>=2.17.5,<3.0.0    # For code analysis
