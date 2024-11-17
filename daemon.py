@@ -235,7 +235,11 @@ class FanController:
             'cpu_load': psutil.cpu_percent(),
             'memory_usage': psutil.virtual_memory().percent,
             'disk_usage': psutil.disk_usage('/').percent,
-            'performance_stats': self.performance_stats
+            'performance_stats': {
+                **self.performance_stats,
+                'start_time': self.performance_stats['start_time'].isoformat(),
+                'total_runtime': str(self.performance_stats['total_runtime']),
+            }
         }
 
     def get_status_page(self) -> str:
