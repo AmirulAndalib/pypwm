@@ -455,6 +455,13 @@ class FanController:
         info_handler.setFormatter(info_formatter)
         logger.addHandler(info_handler)
 
+        # Console handler for real-time info
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
         return logger
 
     def _setup_signal_handlers(self):
@@ -508,31 +515,30 @@ class FanController:
         self.ramp_to_speed(100)
         self.logger.info("Fan set to maximum speed.")
 
-    if __name__ == "__main__":
-        try:
-            parser = argparse.ArgumentParser(description="Fan Controller Service")
-            parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
-            parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
-            args = parser.parse_args()
-
-            controller = FanController()
-            if args.max:
-                controller.set_max_speed()
-            elif args.reload_config:
-                controller.reload_config()
-            else:
-                controller.run()
-        except KeyboardInterrupt:
-            print("\nShutting down gracefully...")
-            controller.cleanup()
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Fan Controller Service")
+    parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
+    parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
+    args = parser.parse_args()
 
     controller = FanController()
     if args.max:
         controller.set_max_speed()
+        while True:
+            # Keep the script running to log temperatures and other metrics
+            temp = controller.get_cpu_temp()
+            system_load = psutil.cpu_percent()
+            memory_usage = psutil.virtual_memory().percent
+            disk_usage = psutil.disk_usage('/').percent
+
+            # Log current status
+            controller.logger.info(
+                f"CPU Temp: {temp:.1f}°C, Fan speed: {controller.current_dc}%, "
+                f"System load: {system_load:.1f}%, Memory: {memory_usage:.1f}%"
+            )
+            time.sleep(5.0)
     elif args.reload_config:
         controller.reload_config()
+        controller.run()
     else:
         controller.run()
