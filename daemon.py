@@ -509,21 +509,24 @@ class FanController:
         self.load_config()
         self.logger.info("Configuration reloaded.")
 
-    def set_max_speed(self):
-        """Set the fan to run at maximum speed"""
-        self.logger.info("Setting fan to maximum speed.")
-        self.ramp_to_speed(100)
-        self.logger.info("Fan set to maximum speed.")
+    def set_speed(self, speed: int):
+        """Set the fan to run at a specific speed"""
+        if 0 <= speed <= 100:
+            self.logger.info(f"Setting fan to {speed}% speed.")
+            self.ramp_to_speed(speed)
+            self.logger.info(f"Fan set to {speed}% speed.")
+        else:
+            self.logger.error(f"Invalid speed value: {speed}. Speed must be between 0 and 100.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fan Controller Service")
     parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
-    parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
+    parser.add_argument('--set-speed', type=int, help='Set fan to a specific speed (0-100)')
     args = parser.parse_args()
 
     controller = FanController()
-    if args.max:
-        controller.set_max_speed()
+    if args.set_speed is not None:
+        controller.set_speed(args.set_speed)
         while True:
             # Keep the script running to log temperatures and other metrics
             temp = controller.get_cpu_temp()
