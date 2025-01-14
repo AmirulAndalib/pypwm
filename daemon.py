@@ -28,8 +28,8 @@ import argparse
 
 # Load environment variables from .env file
 load_dotenv()
-BASE_DIR = os.getenv('BASE_DIR')
-PORT = int(os.getenv('PORT'))
+BASE_DIR = os.getenv('BASE_DIR', os.path.dirname(os.path.abspath(__file__)))
+PORT = int(os.getenv('PORT', 8000))
 
 @dataclass
 class TempThresholds:
@@ -440,30 +440,20 @@ class FanController:
         logger = logging.getLogger('FanController')
         logger.setLevel(logging.DEBUG)
 
+        # Ensure log directory exists
+        log_dir = os.path.dirname(os.path.join(BASE_DIR, 'daemon.log'))
+        os.makedirs(log_dir, exist_ok=True)
+
         # File handler for info logs
-        info_log_path = os.path.join(BASE_DIR, 'daemon.log')
-        info_handler = logging.handlers.RotatingFileHandler(info_log_path, maxBytes=5*1024*1024, backupCount=1)
+        info_handler = logging.handlers.RotatingFileHandler(
+            os.path.join(BASE_DIR, 'daemon.log'),
+            maxBytes=5*1024*1024,
+            backupCount=1
+        )
         info_handler.setLevel(logging.INFO)
         info_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         info_handler.setFormatter(info_formatter)
-
-        # File handler for error logs
-        error_log_path = os.path.join(BASE_DIR, 'daemon.error.log')
-        error_handler = logging.handlers.RotatingFileHandler(error_log_path, maxBytes=5*1024*1024, backupCount=1)
-        error_handler.setLevel(logging.ERROR)
-        error_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        error_handler.setFormatter(error_formatter)
-
-        # Console handler for real-time info
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_formatter)
-
-        # Add handlers to logger
         logger.addHandler(info_handler)
-        logger.addHandler(error_handler)
-        logger.addHandler(console_handler)
 
         return logger
 
@@ -477,6 +467,7 @@ class FanController:
         """Handle exit signal"""
         self.logger.info("Shutting down...")
         self.running = False
+        self.cleanup()
         sys.exit(0)
 
     def cleanup(self):
@@ -488,10 +479,14 @@ class FanController:
     def perform_initial_test(self):
         """Perform initial test cycle"""
         self.logger.info("Performing initial fan test.")
-        self.ramp_to_speed(100)
-        time.sleep(1)
-        self.ramp_to_speed(0)
-        self.logger.info("Initial fan test completed.")
+        try:
+            self.ramp_to_speed(100)
+            time.sleep(2)
+            self.ramp_to_speed(0)
+            self.logger.info("Initial fan test completed.")
+        except Exception as e:
+            self.logger.error(f"Initial test failed: {e}")
+            raise
 
     @contextmanager
     def error_handling(self):
@@ -513,11 +508,26 @@ class FanController:
         self.ramp_to_speed(100)
         self.logger.info("Fan set to maximum speed.")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fan Controller Service")
-    parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
-    parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
-    args = parser.parse_args()
+    if __name__ == "__main__":
+        try:
+            parser = argparse.ArgumentParser(description="Fan Controller Service")
+            parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
+            parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
+            args = parser.parse_args()
+
+            controller = FanController()
+            if args.max:
+                controller.set_max_speed()
+            elif args.reload_config:
+                controller.reload_config()
+            else:
+                controller.run()
+        except KeyboardInterrupt:
+            print("\nShutting down gracefully...")
+            controller.cleanup()
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
     controller = FanController()
     if args.max:
