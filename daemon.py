@@ -24,6 +24,7 @@ import socketserver
 from queue import Queue
 import os
 from dotenv import load_dotenv
+import argparse
 
 # Load environment variables from .env file
 load_dotenv()
@@ -106,6 +107,10 @@ class DataCollector:
                     metrics.memory_usage,
                     metrics.disk_usage
                 ))
+                # Delete old metrics to save disk space
+                conn.execute('''
+                    DELETE FROM metrics WHERE timestamp < datetime('now', '-7 days')
+                ''')
             self.metrics_queue.task_done()
 
     def get_metrics(self, hours: int = 24) -> List[Dict]:
@@ -195,7 +200,7 @@ class FanController:
                 self.thresholds = TempThresholds(**config.get('thresholds', {}))
                 # Add more configuration loading as needed
             except Exception as e:
-                print(f"Error loading config: {e}")
+                self.logger.error(f"Error loading config: {e}")
                 # Use default values
                 self.thresholds = TempThresholds()
         else:
@@ -437,14 +442,14 @@ class FanController:
 
         # File handler for info logs
         info_log_path = os.path.join(BASE_DIR, 'daemon.log')
-        info_handler = logging.handlers.RotatingFileHandler(info_log_path, maxBytes=5*1024*1024, backupCount=2)
+        info_handler = logging.handlers.RotatingFileHandler(info_log_path, maxBytes=5*1024*1024, backupCount=1)
         info_handler.setLevel(logging.INFO)
         info_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         info_handler.setFormatter(info_formatter)
 
         # File handler for error logs
         error_log_path = os.path.join(BASE_DIR, 'daemon.error.log')
-        error_handler = logging.handlers.RotatingFileHandler(error_log_path, maxBytes=5*1024*1024, backupCount=2)
+        error_handler = logging.handlers.RotatingFileHandler(error_log_path, maxBytes=5*1024*1024, backupCount=1)
         error_handler.setLevel(logging.ERROR)
         error_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         error_handler.setFormatter(error_formatter)
@@ -497,6 +502,17 @@ class FanController:
             self.logger.error(f"An error occurred: {e}")
             self.handle_emergency("Unexpected error")
 
+    def reload_config(self):
+        """Reload configuration from file"""
+        self.load_config()
+        self.logger.info("Configuration reloaded.")
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Fan Controller Service")
+    parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
+    args = parser.parse_args()
+
     controller = FanController()
+    if args.reload_config:
+        controller.reload_config()
     controller.run()

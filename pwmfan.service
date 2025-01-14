@@ -1,6 +1,6 @@
 [Unit]
 Description=Raspberry Pi PWM Fan Controller
-Documentation=https://github.com/yourusername/pypwm
+Documentation=https://github.com/amirulandalib/pypwm
 After=network.target
 Wants=network.target
 After=raspberrypi-sys-mods.service
@@ -10,12 +10,12 @@ Type=simple
 # Running as root for GPIO access
 User=root
 Group=root
-ExecStart=/home/amirulandalib/Scripts/pypwm/venv/bin/python /home/amirulandalib/Scripts/pypwm/daemon.py
-WorkingDirectory=/home/amirulandalib/Scripts/pypwm
+ExecStart=/home/raspberrypi/Scripts/pypwm/venv/bin/python /home/raspberrypi/Scripts/pypwm/daemon.py
+WorkingDirectory=/home/raspberrypi/Scripts/pypwm
 
 # Environment settings
 Environment=PYTHONUNBUFFERED=1
-Environment=BASE_DIR=/home/amirulandalib/Scripts/pypwm
+Environment=BASE_DIR=/home/raspberrypi/Scripts/pypwm
 
 # Restart configuration
 Restart=always
@@ -31,11 +31,11 @@ NoNewPrivileges=false
 
 # Resource limits
 CPUQuota=25%
-MemoryLimit=100M
+MemoryMax=128M
 
 # Logging
-StandardOutput=append:/home/amirulandalib/Scripts/pypwm/logs/daemon.log
-StandardError=append:/home/amirulandalib/Scripts/pypwm/logs/daemon.error.log
+StandardOutput=append:/home/raspberrypi/Scripts/pypwm/logs/daemon.log
+StandardError=append:/home/raspberrypi/Scripts/pypwm/logs/daemon.error.log
 
 [Install]
 WantedBy=multi-user.target
