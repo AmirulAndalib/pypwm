@@ -2,40 +2,18 @@
 Description=Raspberry Pi PWM Fan Controller
 Documentation=https://github.com/amirulandalib/pypwm
 After=network.target
-Wants=network.target
-After=raspberrypi-sys-mods.service
 
 [Service]
-Type=simple
-# Running as root for GPIO access
-User=root
-Group=root
 ExecStart=/home/raspberrypi/Scripts/pypwm/venv/bin/python /home/raspberrypi/Scripts/pypwm/daemon.py
 WorkingDirectory=/home/raspberrypi/Scripts/pypwm
-
-# Environment settings
-Environment=PYTHONUNBUFFERED=1
-Environment=BASE_DIR=/home/raspberrypi/Scripts/pypwm
-
-# Restart configuration
+StandardOutput=journal+console
+StandardError=journal+console
 Restart=always
-RestartSec=10
-StartLimitInterval=60
-StartLimitBurst=3
-
-# Security settings
-# Modified security settings for root access
-ProtectSystem=false
-PrivateTmp=false
-NoNewPrivileges=false
+User=raspberrypi
 
 # Resource limits
 CPUQuota=25%
 MemoryMax=128M
-
-# Logging
-StandardOutput=append:/home/raspberrypi/Scripts/pypwm/logs/daemon.log
-StandardError=append:/home/raspberrypi/Scripts/pypwm/logs/daemon.error.log
 
 [Install]
 WantedBy=multi-user.target
