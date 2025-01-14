@@ -507,12 +507,22 @@ class FanController:
         self.load_config()
         self.logger.info("Configuration reloaded.")
 
+    def set_max_speed(self):
+        """Set the fan to run at maximum speed"""
+        self.logger.info("Setting fan to maximum speed.")
+        self.ramp_to_speed(100)
+        self.logger.info("Fan set to maximum speed.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fan Controller Service")
     parser.add_argument('--reload-config', action='store_true', help='Reload configuration')
+    parser.add_argument('--max', action='store_true', help='Set fan to maximum speed')
     args = parser.parse_args()
 
     controller = FanController()
-    if args.reload_config:
+    if args.max:
+        controller.set_max_speed()
+    elif args.reload_config:
         controller.reload_config()
-    controller.run()
+    else:
+        controller.run()
