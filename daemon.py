@@ -150,12 +150,13 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
 class FanController:
-    def __init__(self, gpio_pin: int = 14, pwm_freq: int = 100):
+    def __init__(self, gpio_pin: int = 14, pwm_freq: int = 100, manual_mode: bool = False):
         self.gpio_pin = gpio_pin
         self.pwm_freq = pwm_freq
         self.current_dc = 0
         self.running = True
         self.thresholds = TempThresholds()
+        self.manual_mode = manual_mode
 
         # Configuration
         self.config_path = Path(os.path.join(BASE_DIR, "config.json"))
@@ -175,9 +176,6 @@ class FanController:
         # Setup signal handlers
         self._setup_signal_handlers()
 
-        # Start monitoring server
-        self.start_monitoring_server()
-
         # Initialize maintenance timer
         self._last_maintenance = datetime.now()
         self.maintenance_interval = timedelta(days=30)
@@ -190,6 +188,10 @@ class FanController:
             'emergency_shutdowns': 0,
             'maintenance_performed': 0
         }
+
+        if not self.manual_mode:
+            # Start monitoring server
+            self.start_monitoring_server()
 
     def load_config(self):
         """Load configuration from file"""
@@ -524,8 +526,10 @@ if __name__ == "__main__":
     parser.add_argument('--set-speed', type=int, help='Set fan to a specific speed (0-100)')
     args = parser.parse_args()
 
-    controller = FanController()
-    if args.set_speed is not None:
+    manual_mode = args.set_speed is not None
+    controller = FanController(manual_mode=manual_mode)
+
+    if manual_mode:
         controller.set_speed(args.set_speed)
         while True:
             # Keep the script running to log temperatures and other metrics
