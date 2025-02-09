@@ -37,8 +37,8 @@ MAX_TEMP = float(os.getenv('MAX_TEMP', 85.0))
 PWM_PIN = int(os.getenv('PWM_PIN', 18))  # Default to 18, but configurable
 PWM_FREQ = int(os.getenv('PWM_FREQ', 100))
 MAX_FAN_RPM = int(os.getenv('MAX_FAN_RPM', 5000))  # Default, will be calibrated
-USERNAME = os.getenv('USERNAME', 'admin')
-PASSWORD = os.getenv('PASSWORD', 'password')
+USERNAME = os.getenv('USERNAME', 'admin')  # Add to .env!
+PASSWORD = os.getenv('PASSWORD', 'password')  # Add to .env!
 
 
 @dataclass
@@ -79,9 +79,9 @@ class DataCollector:
 
     def __init__(self, db_path: str = os.path.join(BASE_DIR, "metrics.db")):
         self.db_path = db_path
-        self._init_database()
         self.metrics_queue = Queue()
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # <---  CRITICAL FIX: Initialize the lock *HERE*
+        self._init_database()  # Call after lock is defined
         self.collection_thread = threading.Thread(target=self._collect_metrics_worker, daemon=True)
         self.collection_thread.start()
 
@@ -108,7 +108,7 @@ class DataCollector:
     @contextmanager
     def _get_db_connection(self):
         """Thread-safe database connection context manager."""
-        with self.lock:
+        with self.lock:  # Now self.lock *exists*
             conn = sqlite3.connect(self.db_path, timeout=10)
             try:
                 yield conn
@@ -702,7 +702,7 @@ class FanController:
             self.cleanup()
             self.logger.info("Fan controller stopped.")
 
-       
+
 
     def cleanup(self):
         """Clean up resources."""
