@@ -99,14 +99,14 @@ class DataCollector:
                     timestamp DATETIME,
                     temperature REAL,
                     fan_speed INTEGER,
-                    fan_rpm INTEGER,  
+                    fan_rpm INTEGER,
                     cpu_load REAL,
                     memory_usage REAL,
                     disk_usage REAL
                 )
             ''')
             conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_timestamp 
+                CREATE INDEX IF NOT EXISTS idx_timestamp
                 ON metrics(timestamp)
             ''')
 
@@ -178,6 +178,7 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
         """Handle GET requests with authentication"""
         if not self.check_auth():
             self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Bearer realm="Access to the metrics"')
             self.end_headers()
             self.wfile.write(b'Unauthorized')
             return
@@ -389,36 +390,17 @@ class FanController:
 
 
     def calculate_fan_speed(self, temp: float, load: float) -> int:
-        """Calculate fan speed using PID-inspired dynamic adjustment"""
-        # PID constants
-        Kp = 0.8
-        Ki = 0.05
-        Kd = 0.1
-
-        now = time.monotonic()
-        dt = now - self.last_time
-        self.last_time = now
-
-        # Calculate error
-        error = max(0, temp - self.thresholds.low_2)
-
-        # PID terms
-        self.integral += error * dt
-        derivative = (error - (self.last_temp - self.thresholds.low_2)) / dt
-
-        # Calculate base speed
-        base_speed = (error * Kp) + (self.integral * Ki) + (derivative * Kd)
-        load_factor = 1 + (load / 100)  # 1-2x multiplier based on load
-
-        # Adjust speed with load factor and hysteresis
-        target_speed = min(100, max(0, base_speed * load_factor))
-
-        # Apply hysteresis
-        if abs(target_speed - self.current_dc) < self.thresholds.hysteresis:
-            return self.current_dc
-
-        self.last_temp = temp
-        return int(round(target_speed))
+        """Calculate desired fan speed based on temperature and load (Simplified)."""
+        if temp >= self.thresholds.high or load >= 90:
+            return 100
+        elif temp >= self.thresholds.medium or load >= 70:
+            return 85
+        elif temp >= self.thresholds.low_1 or load >= 50:
+            return 75
+        elif temp >= self.thresholds.low_2 or load >= 30:
+            return 60
+        else:
+            return 40
 
     def ramp_to_speed(self, target_dc: int):
         """Smooth speed transition with dynamic step size"""
@@ -480,13 +462,14 @@ class FanController:
             backupCount=7,
             encoding='utf-8'
         )
+        # File formatter: Include RPM in log messages
         file_formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - %(module)s - %(message)s - RPM: %(rpm)s'
         )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-        # Console handler with color
+        # Console handler with color (no RPM here)
         console_handler = logging.StreamHandler()
         console_formatter = logging.Formatter(
             '\033[1m%(asctime)s - %(levelname)s - %(message)s\033[0m'
@@ -590,13 +573,13 @@ class FanController:
                 <meta http-equiv="refresh" content="30">
                 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                 <style>
-                    .grid {{ 
+                    .grid {{
                         display: grid;
                         grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
                         gap: 20px;
                         padding: 20px;
                     }}
-                    .card {{ 
+                    .card {{
                         background: #f5f5f5;
                         padding: 20px;
                         border-radius: 10px;
@@ -611,14 +594,14 @@ class FanController:
                         <h2>Real-time Metrics</h2>
                         <p>Temperature: {metrics['temperature']:.1f}°C</p>
                         <p>Fan Speed: {metrics['fan_speed']}%</p>
-                        <p>Fan RPM: {metrics['fan_rpm']}</p> 
+                        <p>Fan RPM: {metrics['fan_rpm']}</p>
                         <p>CPU Load: {metrics['cpu_load']:.1f}%</p>
                     </div>
-                    
+
                     <div class="card">
                         <canvas id="tempChart"></canvas>
                     </div>
-                    
+
                     <div class="card">
                         <canvas id="speedChart"></canvas>
                     </div>
@@ -630,7 +613,7 @@ class FanController:
 
                 <script>
                     const timeLabels = {json.dumps(timestamps)};
-                    
+
                     new Chart(document.getElementById('tempChart'), {{
                         type: 'line',
                         data: {{
@@ -643,7 +626,7 @@ class FanController:
                             }}]
                         }}
                     }});
-                    
+
                     new Chart(document.getElementById('speedChart'), {{
                         type: 'line',
                         data: {{
@@ -694,43 +677,46 @@ class FanController:
             self.logger.error("Invalid speed.  Must be between 0 and 100.")
 
     def run(self):
-      """Main control loop"""
-      self.logger.info("Starting fan controller...")
-      try:
-          while self.running:
-              if not self.manual_mode:
-                  temp = self.get_cpu_temp()
-                  load = self.get_system_load()
-                  target_speed = self.calculate_fan_speed(temp, load)
-                  self.ramp_to_speed(target_speed)
+        """Main control loop"""
+        self.logger.info("Starting fan controller...")
+        try:
+            while self.running:
+                if not self.manual_mode:
+                    temp = self.get_cpu_temp()
+                    load = self.get_system_load()
+                    target_speed = self.calculate_fan_speed(temp, load)
+                    self.ramp_to_speed(target_speed)
 
-                  # Store and analyze temperature history
-                  self.temp_history.append(temp)
-                  if len(self.temp_history) > 100:
-                      self.temp_history.pop(0)  # Keep history to a manageable size
-                  self.analyze_temperature_trends()
+                    # Store and analyze temperature history
+                    self.temp_history.append(temp)
+                    if len(self.temp_history) > 100:
+                        self.temp_history.pop(0)  # Keep to a manageable size
+                    self.analyze_temperature_trends()
 
-                  # Check for maintenance
-                  if datetime.now() - self._last_maintenance > self.maintenance_interval:
-                      self.perform_maintenance_cycle()
+                    # Check for maintenance
+                    if datetime.now() - self._last_maintenance > self.maintenance_interval:
+                        self.perform_maintenance_cycle()
+
+                # Collect metrics, create MetricsData object, and add to queue
+                metrics_dict = self.get_current_metrics()
+                metrics_data = MetricsData(**metrics_dict)  # Create instance
+                self.data_collector.add_metrics(metrics_data)  # Pass object
+
+                #  Logging with RPM
+                rpm = self.get_fan_rpm() # Get current RPM
+                log_message = f"Temp: {metrics_dict['temperature']:.2f}°C, Speed: {self.current_dc}%, Load: {metrics_dict['cpu_load']:.1f}%, RPM: {rpm}"
+                self.logger.debug(log_message, extra={'rpm': rpm})
 
 
-              # Collect metrics and add to queue.  This happens in both auto and manual mode.
-              metrics = self.get_current_metrics()
-              self.data_collector.add_metrics(metrics)
-              # Custom logging with RPM
-              rpm = self.get_fan_rpm()
-              self.logger.debug(f"Temp: {metrics['temperature']:.2f}°C, Speed: {self.current_dc}%, Load: {metrics['cpu_load']:.1f}%, RPM: {rpm}", extra={'rpm': rpm})
 
-
-              time.sleep(2)  # Check every 2 seconds
-      except KeyboardInterrupt:
-        self.logger.info("Keyboard interrupt detected, shutting down.")
-        self.running= False
-        self.cleanup()
-      finally:
+                time.sleep(2)  # Check every 2 seconds
+        except KeyboardInterrupt:
+          self.logger.info("Keyboard interrupt detected, shutting down.")
+          self.running= False
           self.cleanup()
-          self.logger.info("Fan controller stopped.")
+        finally:
+            self.cleanup()
+            self.logger.info("Fan controller stopped.")
 
 
 
@@ -758,7 +744,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        # Create FanController instance to initialize DataCollector correctly
+        # Create FanController instance to initialize DataCollector/etc.
         controller = FanController(manual_mode=bool(args.set_speed))
 
         if args.calibrate:
@@ -771,7 +757,7 @@ if __name__ == "__main__":
 
         if args.set_speed is not None:
             controller.set_speed(args.set_speed)
-            controller.run()  # Continue monitoring in manual mode
+            controller.run()  # Continue monitoring even in manual mode
         else:
             controller.run()
 
