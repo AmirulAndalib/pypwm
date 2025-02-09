@@ -81,14 +81,13 @@ class DataCollector:
     def __init__(self, db_path: str = os.path.join(BASE_DIR, "metrics.db")):
         self.db_path = db_path
         self.metrics_queue = Queue()
-        self.lock = threading.Lock() # FIX: Initialize the lock here
-        self._init_database() # Call after lock is defined
+        self.lock = threading.Lock()  # Initialize the lock here
+        self._init_database()  # Call after lock is defined
         self.collection_thread = threading.Thread(target=self._collect_metrics_worker, daemon=True)
         self.collection_thread.start()
 
-
     def _init_database(self):
-        """Initialize SQLite database with WAL mode for better concurrency"""
+        """Initialize SQLite database with WAL mode, and create fan_rpm column."""
         db_dir = Path(self.db_path).parent
         db_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +98,7 @@ class DataCollector:
                     timestamp DATETIME,
                     temperature REAL,
                     fan_speed INTEGER,
-                    fan_rpm INTEGER,
+                    fan_rpm INTEGER,  
                     cpu_load REAL,
                     memory_usage REAL,
                     disk_usage REAL
@@ -158,7 +157,6 @@ class DataCollector:
             logging.error(f"Error reading from database: {e}")
             return []
 
-
 class StatusServer(http.server.SimpleHTTPRequestHandler):
     """Improved HTTP server with authentication and more endpoints"""
 
@@ -173,6 +171,7 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
             return True
         auth_header = self.headers.get('Authorization', '')
         return auth_header == f'Bearer {self.auth_token}'
+
 
     def do_GET(self):
         """Handle GET requests with authentication"""
@@ -221,7 +220,6 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(data, cls=EnhancedJSONEncoder).encode())
         except Exception as e:
             self.send_error(500, str(e))
-
 
 class FanController:
     def __init__(self, gpio_pin: int = PWM_PIN, pwm_freq: int = PWM_FREQ, manual_mode: bool = False):
@@ -438,7 +436,7 @@ class FanController:
             return 0
 
         # Simulate some variability and potential stalls
-        rpm = int(self.current_dc / 100 * self.max_fan_rpm * random.uniform(0.95, 1.05))
+        rpm = int(self.current_dc / 100 * self.max_fan_rpm * random.uniform(0.90, 1.10))
 
         # Simulate occasional stalls at low speeds
         if self.current_dc < 20 and random.random() < 0.1:  # 10% chance of stall below 20% DC
@@ -462,18 +460,13 @@ class FanController:
             backupCount=7,
             encoding='utf-8'
         )
-        # File formatter: Include RPM in log messages
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(module)s - %(message)s - RPM: %(rpm)s'
-        )
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(module)s - %(message)s')
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-        # Console handler with color (no RPM here)
+        # Console handler
         console_handler = logging.StreamHandler()
-        console_formatter = logging.Formatter(
-            '\033[1m%(asctime)s - %(levelname)s - %(message)s\033[0m'
-        )
+        console_formatter = logging.Formatter('\033[1m%(asctime)s - %(levelname)s - %(message)s\033[0m')
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
 
@@ -702,10 +695,11 @@ class FanController:
                 metrics_data = MetricsData(**metrics_dict)  # Create instance
                 self.data_collector.add_metrics(metrics_data)  # Pass object
 
-                #  Logging with RPM
-                rpm = self.get_fan_rpm() # Get current RPM
-                log_message = f"Temp: {metrics_dict['temperature']:.2f}°C, Speed: {self.current_dc}%, Load: {metrics_dict['cpu_load']:.1f}%, RPM: {rpm}"
-                self.logger.debug(log_message, extra={'rpm': rpm})
+                # Logging
+                log_message = (f"Temp: {metrics_dict['temperature']:.2f}°C, "
+                               f"Speed: {self.current_dc}%, Load: {metrics_dict['cpu_load']:.1f}%, "
+                               f"RPM: {metrics_dict['fan_rpm']}")
+                self.logger.debug(log_message)
 
 
 
