@@ -80,11 +80,12 @@ class DataCollector:
 
     def __init__(self, db_path: str = os.path.join(BASE_DIR, "metrics.db")):
         self.db_path = db_path
-        self._init_database()
         self.metrics_queue = Queue()
+        self.lock = threading.Lock() # FIX: Initialize the lock here
+        self._init_database() # Call after lock is defined
         self.collection_thread = threading.Thread(target=self._collect_metrics_worker, daemon=True)
         self.collection_thread.start()
-        self.lock = threading.Lock()
+
 
     def _init_database(self):
         """Initialize SQLite database with WAL mode for better concurrency"""
@@ -418,6 +419,7 @@ class FanController:
 
         self.last_temp = temp
         return int(round(target_speed))
+
     def ramp_to_speed(self, target_dc: int):
         """Smooth speed transition with dynamic step size"""
         if target_dc == self.current_dc:
@@ -574,7 +576,7 @@ class FanController:
         """Enhanced status page with charts and trends"""
         metrics = self.get_current_metrics()
         history = self.data_collector.get_metrics(1)  # Last hour
-        
+
         # Prepare chart data
         timestamps = [m['timestamp'] for m in history]
         temps = [m['temperature'] for m in history]
@@ -701,7 +703,7 @@ class FanController:
                   load = self.get_system_load()
                   target_speed = self.calculate_fan_speed(temp, load)
                   self.ramp_to_speed(target_speed)
-                  
+
                   # Store and analyze temperature history
                   self.temp_history.append(temp)
                   if len(self.temp_history) > 100:
@@ -756,6 +758,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
+        # Create FanController instance to initialize DataCollector correctly
         controller = FanController(manual_mode=bool(args.set_speed))
 
         if args.calibrate:
