@@ -12,13 +12,14 @@ import sys
 import json
 import threading
 import statistics
+import random  # For RPM simulation
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 from datetime import datetime, timedelta
 import sqlite3
 from contextlib import contextmanager
-import socket  # Import socket
+import socket
 import http.server
 import socketserver
 from queue import Queue
@@ -35,6 +36,7 @@ PORT = int(os.getenv('PORT', 8000))
 MAX_TEMP = float(os.getenv('MAX_TEMP', 85.0))
 PWM_PIN = int(os.getenv('PWM_PIN', 18))  # Default to 18, but configurable
 PWM_FREQ = int(os.getenv('PWM_FREQ', 100))
+MAX_FAN_RPM = int(os.getenv('MAX_FAN_RPM', 5000))  #  Add to .env!
 
 
 @dataclass
@@ -60,6 +62,7 @@ class MetricsData:
     timestamp: datetime
     temperature: float
     fan_speed: int
+    fan_rpm: int  # Add fan RPM
     cpu_load: float
     memory_usage: float
     disk_usage: float
@@ -95,6 +98,7 @@ class DataCollector:
                     timestamp DATETIME,
                     temperature REAL,
                     fan_speed INTEGER,
+                    fan_rpm INTEGER,  
                     cpu_load REAL,
                     memory_usage REAL,
                     disk_usage REAL
@@ -127,9 +131,9 @@ class DataCollector:
             try:
                 with self._get_db_connection() as conn:
                     conn.execute('''
-                        INSERT INTO metrics (timestamp, temperature, fan_speed, cpu_load, memory_usage, disk_usage)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (data.timestamp, data.temperature, data.fan_speed, data.cpu_load, data.memory_usage, data.disk_usage))
+                        INSERT INTO metrics (timestamp, temperature, fan_speed, fan_rpm, cpu_load, memory_usage, disk_usage)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (data.timestamp, data.temperature, data.fan_speed, data.fan_rpm, data.cpu_load, data.memory_usage, data.disk_usage))
             except Exception as e:
                 logging.error(f"Error writing to database: {e}")  # Use standard logging
             finally:
@@ -141,7 +145,7 @@ class DataCollector:
         try:
             with self._get_db_connection() as conn:
                 cursor = conn.execute('''
-                    SELECT timestamp, temperature, fan_speed, cpu_load, memory_usage, disk_usage
+                    SELECT timestamp, temperature, fan_speed, fan_rpm, cpu_load, memory_usage, disk_usage
                     FROM metrics
                     WHERE timestamp >= ?
                     ORDER BY timestamp
@@ -229,6 +233,7 @@ class FanController:
         self.last_load = 0.0
         self.integral = 0.0
         self.last_time = time.monotonic()
+        self.max_fan_rpm = MAX_FAN_RPM # Get from .env
 
         # Configuration
         self.config_path = Path(os.path.join(BASE_DIR, "config.json"))
@@ -238,6 +243,7 @@ class FanController:
         self.data_collector = DataCollector()
         self.temp_history: List[float] = []
         self.speed_history: List[int] = []
+        self.rpm_history: List[int] = [] # Add RPM history
 
         # Set up logging
         self.logger = self._setup_logging()
@@ -437,6 +443,26 @@ class FanController:
         self.current_dc = target_dc
 
 
+    def get_fan_rpm(self) -> int:
+        """
+        Estimates fan RPM based on PWM duty cycle.  This is a *simulation*.
+
+        For a real RPM reading, you would need a fan with a tachometer output
+        and connect that to a GPIO pin, then use interrupts to count pulses.
+        """
+        if self.current_dc == 0:
+            return 0
+
+        # Simulate some variability and potential stalls
+        rpm = int(self.current_dc / 100 * self.max_fan_rpm * random.uniform(0.95, 1.05))
+
+        # Simulate occasional stalls at low speeds
+        if self.current_dc < 20 and random.random() < 0.1:  # 10% chance of stall below 20% DC
+            rpm = 0
+            self.logger.warning("Simulated fan stall detected.")
+
+        return rpm
+
     def _setup_logging(self):
         """Set up logging with timed rotating files"""
         logger = logging.getLogger('FanController')
@@ -453,7 +479,7 @@ class FanController:
             encoding='utf-8'
         )
         file_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(module)s - %(message)s'
+            '%(asctime)s - %(levelname)s - %(module)s - %(message)s - RPM: %(rpm)s'
         )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
@@ -532,11 +558,13 @@ class FanController:
         load = self.get_system_load()
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
+        rpm = self.get_fan_rpm()  # Get the fan RPM
 
         return {
             'timestamp': datetime.now(),
             'temperature': temp,
             'fan_speed': self.current_dc,
+            'fan_rpm': rpm,  # Add fan RPM
             'cpu_load': load,
             'memory_usage': memory.percent,
             'disk_usage': disk.percent
@@ -551,6 +579,7 @@ class FanController:
         timestamps = [m['timestamp'] for m in history]
         temps = [m['temperature'] for m in history]
         speeds = [m['fan_speed'] for m in history]
+        rpms = [m['fan_rpm'] for m in history] # Add RPMs for chart
 
         return f"""
         <html>
@@ -580,6 +609,7 @@ class FanController:
                         <h2>Real-time Metrics</h2>
                         <p>Temperature: {metrics['temperature']:.1f}°C</p>
                         <p>Fan Speed: {metrics['fan_speed']}%</p>
+                        <p>Fan RPM: {metrics['fan_rpm']}</p> 
                         <p>CPU Load: {metrics['cpu_load']:.1f}%</p>
                     </div>
                     
@@ -589,6 +619,10 @@ class FanController:
                     
                     <div class="card">
                         <canvas id="speedChart"></canvas>
+                    </div>
+
+                    <div class="card">
+                        <canvas id="rpmChart"></canvas>
                     </div>
                 </div>
 
@@ -616,6 +650,19 @@ class FanController:
                                 label: 'Fan Speed (%)',
                                 data: {json.dumps(speeds)},
                                 borderColor: '#36a2eb',
+                                tension: 0.1
+                            }}]
+                        }}
+                    }});
+
+                    new Chart(document.getElementById('rpmChart'), {{
+                        type: 'line',
+                        data: {{
+                            labels: timeLabels,
+                            datasets: [{{
+                                label: 'Fan RPM',
+                                data: {json.dumps(rpms)},
+                                borderColor: '#4bc0c0',
                                 tension: 0.1
                             }}]
                         }}
@@ -669,6 +716,10 @@ class FanController:
               # Collect metrics and add to queue.  This happens in both auto and manual mode.
               metrics = self.get_current_metrics()
               self.data_collector.add_metrics(metrics)
+              # Custom logging with RPM
+              rpm = self.get_fan_rpm()
+              self.logger.debug(f"Temp: {metrics['temperature']:.2f}°C, Speed: {self.current_dc}%, Load: {metrics['cpu_load']:.1f}%, RPM: {rpm}", extra={'rpm': rpm})
+
 
               time.sleep(2)  # Check every 2 seconds
       except KeyboardInterrupt:
