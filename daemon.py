@@ -36,7 +36,9 @@ PORT = int(os.getenv('PORT', 8000))
 MAX_TEMP = float(os.getenv('MAX_TEMP', 85.0))
 PWM_PIN = int(os.getenv('PWM_PIN', 18))  # Default to 18, but configurable
 PWM_FREQ = int(os.getenv('PWM_FREQ', 100))
-MAX_FAN_RPM = int(os.getenv('MAX_FAN_RPM', 5000))  #  Add to .env!
+MAX_FAN_RPM = int(os.getenv('MAX_FAN_RPM', 5000))  # Default, will be calibrated
+USERNAME = os.getenv('USERNAME', 'admin')
+PASSWORD = os.getenv('PASSWORD', 'password')
 
 
 @dataclass
@@ -55,18 +57,16 @@ class TempThresholds:
         if self.hysteresis <= 0:
             raise ValueError("Hysteresis must be positive")
 
-
 @dataclass
 class MetricsData:
     """Store system metrics"""
     timestamp: datetime
     temperature: float
     fan_speed: int
-    fan_rpm: int  # Add fan RPM
+    fan_rpm: int
     cpu_load: float
     memory_usage: float
     disk_usage: float
-
 
 class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -74,20 +74,19 @@ class EnhancedJSONEncoder(json.JSONEncoder):
             return o.isoformat()
         return super().default(o)
 
-
 class DataCollector:
-    """Collect and store system metrics with improved concurrency handling"""
+    """Collect and store system metrics."""
 
     def __init__(self, db_path: str = os.path.join(BASE_DIR, "metrics.db")):
         self.db_path = db_path
+        self._init_database()
         self.metrics_queue = Queue()
-        self.lock = threading.Lock()  # Initialize the lock here
-        self._init_database()  # Call after lock is defined
+        self.lock = threading.Lock()
         self.collection_thread = threading.Thread(target=self._collect_metrics_worker, daemon=True)
         self.collection_thread.start()
 
     def _init_database(self):
-        """Initialize SQLite database with WAL mode, and create fan_rpm column."""
+        """Initialize SQLite database with WAL mode."""
         db_dir = Path(self.db_path).parent
         db_dir.mkdir(parents=True, exist_ok=True)
 
@@ -95,23 +94,20 @@ class DataCollector:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS metrics (
-                    timestamp DATETIME,
+                    timestamp DATETIME PRIMARY KEY,
                     temperature REAL,
                     fan_speed INTEGER,
-                    fan_rpm INTEGER,  
+                    fan_rpm INTEGER,
                     cpu_load REAL,
                     memory_usage REAL,
                     disk_usage REAL
                 )
             ''')
-            conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_timestamp
-                ON metrics(timestamp)
-            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)')
 
     @contextmanager
     def _get_db_connection(self):
-        """Thread-safe database connection context manager"""
+        """Thread-safe database connection context manager."""
         with self.lock:
             conn = sqlite3.connect(self.db_path, timeout=10)
             try:
@@ -121,11 +117,11 @@ class DataCollector:
                 conn.close()
 
     def add_metrics(self, data: MetricsData):
-        """Add metrics to queue for processing"""
+        """Add metrics to the queue for processing."""
         self.metrics_queue.put(data)
 
     def _collect_metrics_worker(self):
-        """Worker thread to process metrics and store in database"""
+        """Worker thread to process metrics and store them in the database."""
         while True:
             data = self.metrics_queue.get()
             try:
@@ -135,10 +131,9 @@ class DataCollector:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (data.timestamp, data.temperature, data.fan_speed, data.fan_rpm, data.cpu_load, data.memory_usage, data.disk_usage))
             except Exception as e:
-                logging.error(f"Error writing to database: {e}")  # Use standard logging
+                logging.error(f"Error writing to database: {e}")
             finally:
                 self.metrics_queue.task_done()
-
 
     def get_metrics(self, hours: int) -> List[Dict]:
         """Retrieve metrics from the last specified hours, ordered by timestamp."""
@@ -150,7 +145,6 @@ class DataCollector:
                     WHERE timestamp >= ?
                     ORDER BY timestamp
                 ''', (datetime.now() - timedelta(hours=hours),))
-                # Convert rows to dictionaries for JSON serialization
                 columns = [col[0] for col in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
         except Exception as e:
@@ -158,30 +152,35 @@ class DataCollector:
             return []
 
 class StatusServer(http.server.SimpleHTTPRequestHandler):
-    """Improved HTTP server with authentication and more endpoints"""
+    """HTTP server with basic form-based login."""
 
     def __init__(self, *args, fan_controller=None, **kwargs):
-        self.auth_token = os.getenv('AUTH_TOKEN', '')
         self.fan_controller = fan_controller
+        self.logged_in = False  # Track login status
         super().__init__(*args, **kwargs)
 
-    def check_auth(self):
-        """Basic authentication check"""
-        if not self.auth_token:
-            return True
-        auth_header = self.headers.get('Authorization', '')
-        return auth_header == f'Bearer {self.auth_token}'
-
-
     def do_GET(self):
-        """Handle GET requests with authentication"""
-        if not self.check_auth():
-            self.send_response(401)
-            self.send_header('WWW-Authenticate', 'Bearer realm="Access to the metrics"')
+        """Handle GET requests (requires login)."""
+        if self.path == '/logout':
+            self.logged_in = False
+            self.send_response(302)
+            self.send_header('Location', '/status')
             self.end_headers()
-            self.wfile.write(b'Unauthorized')
             return
 
+        if not self.logged_in:
+            if self.path == '/status':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(self.login_form().encode('utf-8'))
+            else:  # Redirect other unauthorized requests to /status
+                self.send_response(302) # Redirect
+                self.send_header('Location', '/status')
+                self.end_headers()
+            return
+
+        # User is logged in, proceed as before
         if self.path == '/metrics':
             self.handle_metrics()
         elif self.path == '/status':
@@ -191,8 +190,28 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):
+        """Handle POST requests (for login)."""
+        if self.path == '/login':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            fields = dict(x.split('=') for x in post_data.split('&'))
+
+            if fields.get('username') == USERNAME and fields.get('password') == PASSWORD:
+                self.logged_in = True
+                self.send_response(302)  # Redirect to /status after login
+                self.send_header('Location', '/status')
+                self.end_headers()
+            else:
+                self.send_response(401)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b'Login failed')  # Simple error message
+        else:
+            self.send_error(404)
+
     def handle_metrics(self):
-        """Return current metrics in JSON format"""
+        """Return current metrics in JSON format."""
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
@@ -200,7 +219,7 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(metrics, cls=EnhancedJSONEncoder).encode())
 
     def handle_status(self):
-        """Return HTML status page"""
+        """Return HTML status page (if logged in)."""
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
@@ -208,7 +227,7 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(status_html.encode('utf-8'))
 
     def handle_history(self):
-        """Return historical data"""
+        """Return historical data."""
         try:
             hours = int(self.headers.get('Hours', 24))
             hours = max(1, min(720, hours))  # Limit to 1-720 hours
@@ -219,7 +238,24 @@ class StatusServer(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(data, cls=EnhancedJSONEncoder).encode())
         except Exception as e:
-            self.send_error(500, str(e))
+            self.send_error(500, message=str(e))
+
+
+    def login_form(self):
+        """Generate a simple login form."""
+        return f'''
+            <html>
+            <head><title>Login</title></head>
+            <body>
+                <h1>Login</h1>
+                <form method="POST" action="/login">
+                    Username: <input type="text" name="username"><br>
+                    Password: <input type="password" name="password"><br>
+                    <input type="submit" value="Login">
+                </form>
+            </body>
+            </html>
+        '''
 
 class FanController:
     def __init__(self, gpio_pin: int = PWM_PIN, pwm_freq: int = PWM_FREQ, manual_mode: bool = False):
@@ -231,8 +267,8 @@ class FanController:
         self.manual_mode = manual_mode
         self.last_temp = 0.0
         self.last_load = 0.0
-        self.integral = 0.0
-        self.last_time = time.monotonic()
+        self.integral = 0.0  # Still declare, even if not using PID
+        self.last_time = time.monotonic() # Still used for timing
         self.max_fan_rpm = MAX_FAN_RPM # Get from .env
 
         # Configuration
@@ -243,12 +279,12 @@ class FanController:
         self.data_collector = DataCollector()
         self.temp_history: List[float] = []
         self.speed_history: List[int] = []
-        self.rpm_history: List[int] = [] # Add RPM history
+        self.rpm_history: List[int] = []
 
         # Set up logging
         self.logger = self._setup_logging()
 
-        # GPIO setup with validation
+        # GPIO setup
         self._setup_gpio()
 
         # Setup signal handlers
@@ -266,17 +302,17 @@ class FanController:
             'emergency_shutdowns': 0,
             'maintenance_performed': 0
         }
-        self.monitoring_server = None # Initialize monitoring server
+        self.monitoring_server = None # Initialize monitoring_server
         if not self.manual_mode:
             self.start_monitoring_server()
 
+
     def load_config(self):
-        """Load and validate configuration from file"""
+        """Load and validate configuration from file."""
         if self.config_path.exists():
             try:
                 with open(self.config_path) as f:
                     config = json.load(f)
-                # Load thresholds safely with defaults
                 thresholds_config = config.get('thresholds', {})
                 self.thresholds = TempThresholds(
                     high=thresholds_config.get('high', 45.0),
@@ -285,110 +321,94 @@ class FanController:
                     low_2=thresholds_config.get('low_2', 30.0),
                     hysteresis=thresholds_config.get('hysteresis', 2.0)
                 )
-
                 self.thresholds.validate()
-
 
             except Exception as e:
                 self.logger.error(f"Error loading config: {e}, using defaults")
-                self.thresholds = TempThresholds()  # Ensure defaults
-                self.save_config()  # Save defaults for next time.
+                self.thresholds = TempThresholds()
+                self.save_config()
         else:
             self.logger.info("No config file found, creating with defaults.")
-            self.save_config()  # Create default
+            self.save_config()
 
     def save_config(self):
-        """Save current configuration to file"""
+        """Save current configuration to file."""
         try:
-            config_data = {
-                'thresholds': asdict(self.thresholds)  # Correctly serialize
-            }
+            config_data = {'thresholds': asdict(self.thresholds)}
             with open(self.config_path, 'w') as f:
                 json.dump(config_data, f, indent=4)
         except Exception as e:
             self.logger.error(f"Error saving config: {e}")
 
-
     def _setup_gpio(self):
-        """Set up GPIO and PWM with validation"""
+        """Set up GPIO and PWM."""
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.gpio_pin, GPIO.OUT)
             self.pwm = GPIO.PWM(self.gpio_pin, self.pwm_freq)
-            self.pwm.start(0)  # Start with fan OFF
+            self.pwm.start(0)
             self.logger.info(f"GPIO setup complete. PWM pin: {self.gpio_pin}, Frequency: {self.pwm_freq}Hz")
-
         except Exception as e:
             self.logger.error(f"GPIO setup failed: {e}")
-            self.handle_emergency("GPIO initialization failure")  # Consistent handling
+            self.handle_emergency("GPIO Initialization Failure")
 
     def _setup_signal_handlers(self):
-        """Set up signal handlers for graceful shutdown"""
+        """Set up signal handlers for graceful shutdown."""
         signal.signal(signal.SIGINT, self._sigterm_handler)
         signal.signal(signal.SIGTERM, self._sigterm_handler)
         atexit.register(self.cleanup)
 
     def _sigterm_handler(self, signum, frame):
-        """Handle termination signals"""
+        """Handle termination signals."""
         self.logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.stop_monitoring_server()
         self.running = False
         self.cleanup()
-        sys.exit(0)  # Exit cleanly
-
+        sys.exit(0)
 
     def start_monitoring_server(self):
-        """Start the HTTP server for monitoring"""
-        # Use ThreadingHTTPServer for handling requests in separate threads.
+        """Start the HTTP server."""
         class CustomHandler(StatusServer):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, fan_controller=self, **kwargs)
 
-        self.monitoring_server = socketserver.ThreadingTCPServer(("", PORT), CustomHandler)  # Use ThreadingTCPServer
-        self.monitoring_server.daemon_threads = True  # Allow the server to exit even if threads are still running
+        self.monitoring_server = socketserver.ThreadingTCPServer(("", PORT), CustomHandler)
+        self.monitoring_server.daemon_threads = True
         self.server_thread = threading.Thread(target=self.monitoring_server.serve_forever, daemon=True)
         self.server_thread.start()
         self.logger.info(f"Monitoring server started on port {PORT}")
 
 
     def stop_monitoring_server(self):
-      if self.monitoring_server:
-        self.logger.info("Stopping monitoring server.")
-        self.monitoring_server.shutdown()  # signal shutdown
-        self.monitoring_server.server_close() # close the socket
-        self.logger.info("Monitoring server stopped.")
-
+        """Stop the HTTP server."""
+        if self.monitoring_server:
+            self.logger.info("Stopping monitoring server.")
+            self.monitoring_server.shutdown()
+            self.monitoring_server.server_close()
+            self.logger.info("Monitoring server stopped.")
 
     def get_cpu_temp(self) -> float:
-        """Get CPU temperature with retry and validation"""
+        """Get CPU temperature with retries."""
         for _ in range(3):
             try:
-                output = subprocess.check_output(
-                    ["vcgencmd", "measure_temp"],
-                    stderr=subprocess.STDOUT,
-                    universal_newlines=True
-                )
-                temp_str = re.search(r'temp=([\d.]+)', output).group(1)
+                output = subprocess.check_output(["vcgencmd", "measure_temp"], stderr=subprocess.STDOUT, universal_newlines=True)
+                temp_str = re.search(r"temp=([\d.]+)", output).group(1)
                 temp = float(temp_str)
-
                 if not (0 <= temp <= MAX_TEMP):
                     raise ValueError(f"Temperature out of range: {temp}°C")
-
                 return temp
             except (subprocess.CalledProcessError, AttributeError, ValueError) as e:
                 self.logger.warning(f"Temp read error: {e}, retrying...")
                 time.sleep(1)
-
         self.handle_emergency("Temperature sensor failure")
-        return MAX_TEMP  # Safe fallback
+        return MAX_TEMP
 
     def get_system_load(self) -> float:
-        """Gets the average CPU load over the last minute."""
+        """Get the average CPU load over the last minute."""
         return psutil.cpu_percent(interval=1)
 
-
     def calculate_fan_speed(self, temp: float, load: float) -> int:
-        """Calculate desired fan speed based on temperature and load (Simplified)."""
+        """Calculate fan speed based on temperature and load (Simplified)."""
         if temp >= self.thresholds.high or load >= 90:
             return 100
         elif temp >= self.thresholds.medium or load >= 70:
@@ -401,15 +421,13 @@ class FanController:
             return 40
 
     def ramp_to_speed(self, target_dc: int):
-        """Smooth speed transition with dynamic step size"""
+        """Smoothly transition fan speed."""
         if target_dc == self.current_dc:
-            return
+            return  # Already at target speed
 
         step = 1 if target_dc > self.current_dc else -1
         steps = abs(target_dc - self.current_dc)
-
-        # Dynamic sleep time based on number of steps
-        sleep_time = max(0.01, min(0.1, 1.0 / steps))
+        sleep_time = max(0.01, min(0.1, 1.0 / steps))  # Dynamic sleep
 
         for dc in range(self.current_dc, target_dc, step):
             try:
@@ -418,53 +436,47 @@ class FanController:
                 time.sleep(sleep_time)
             except Exception as e:
                 self.logger.error(f"PWM error: {e}")
-                self.handle_emergency("PWM control failure")
+                self.handle_emergency("PWM Control Failure")
                 break
 
-        self.pwm.ChangeDutyCycle(target_dc)
+        self.pwm.ChangeDutyCycle(target_dc)  # Ensure final value is set.
         self.current_dc = target_dc
 
-
     def get_fan_rpm(self) -> int:
-        """
-        Estimates fan RPM based on PWM duty cycle.  This is a *simulation*.
-
-        For a real RPM reading, you would need a fan with a tachometer output
-        and connect that to a GPIO pin, then use interrupts to count pulses.
-        """
+        """Simulate fan RPM based on duty cycle."""
         if self.current_dc == 0:
             return 0
 
-        # Simulate some variability and potential stalls
-        rpm = int(self.current_dc / 100 * self.max_fan_rpm * random.uniform(0.90, 1.10))
+        # Simulate some variability. Keep within reasonable bounds.
+        rpm = int(self.current_dc / 100 * self.max_fan_rpm * random.uniform(0.95, 1.05))
+        rpm = max(0, min(self.max_fan_rpm, rpm))
 
         # Simulate occasional stalls at low speeds
-        if self.current_dc < 20 and random.random() < 0.1:  # 10% chance of stall below 20% DC
+        if self.current_dc < 20 and random.random() < 0.1:
             rpm = 0
             self.logger.warning("Simulated fan stall detected.")
 
         return rpm
 
     def _setup_logging(self):
-        """Set up logging with timed rotating files"""
+        """Set up logging."""
         logger = logging.getLogger('FanController')
         logger.setLevel(logging.DEBUG)
 
         log_dir = Path(BASE_DIR) / 'logs'
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Timed rotating file handler (daily)
         file_handler = logging.handlers.TimedRotatingFileHandler(
             filename=log_dir / 'fan_control.log',
             when='midnight',
             backupCount=7,
             encoding='utf-8'
         )
+
         file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(module)s - %(message)s')
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-        # Console handler
         console_handler = logging.StreamHandler()
         console_formatter = logging.Formatter('\033[1m%(asctime)s - %(levelname)s - %(message)s\033[0m')
         console_handler.setFormatter(console_formatter)
@@ -473,94 +485,70 @@ class FanController:
         return logger
 
     def analyze_temperature_trends(self):
-        """Enhanced trend analysis with exponential smoothing"""
+        """Analyze temperature trends."""
         if len(self.temp_history) < 10:
             return
 
-        # Calculate exponential moving average
-        alpha = 0.1
+        alpha = 0.1  # Exponential smoothing factor
         ema = self.temp_history[0]
         for temp in self.temp_history[1:]:
             ema = alpha * temp + (1 - alpha) * ema
 
-        # Check for sustained temperature rise
         window = 10
         if len(self.temp_history) >= window:
             recent = self.temp_history[-window:]
-            gradient = (sum(recent[-3:])/3 - sum(recent[:3])/3) / window
-            if gradient > 0.5:  # More specific threshold
-                self.logger.warning(
-                    f"Sustained temperature rise detected: {gradient:.2f}°C/min"
-                )
+            gradient = (sum(recent[-3:]) / 3 - sum(recent[:3]) / 3) / window
+            if gradient > 0.5:
+                self.logger.warning(f"Sustained temperature rise detected: {gradient:.2f}°C/min")
 
     def perform_maintenance_cycle(self):
-        """Enhanced maintenance cycle with bearing wear detection"""
+        """Run a fan test cycle."""
         self.logger.info("Starting comprehensive maintenance cycle")
         original_speed = self.current_dc
-        test_results = []
-
-
         try:
             for speed in [0, 25, 50, 75, 100]:
                 self.ramp_to_speed(speed)
                 time.sleep(2)
-
-                # Measure current draw (simulated, as we can't directly measure)
-                # This is a placeholder; a real implementation would require additional hardware.
-                current = speed / 10 + (0.5 if speed > 0 else 0)  # Simulate current draw
-                test_results.append((speed, current))
-                # Check if fan is responding as expected.  Raise an error if it isn't.
                 if speed > 0 and abs(self.current_dc - speed) > 5:
-                  raise RuntimeError(f"Fan stuck at {self.current_dc}%")
+                    raise RuntimeError(f"Fan stuck at {self.current_dc}%")
 
-            # Analyze bearing wear through current fluctuations
-            currents = [c for _, c in test_results if _ > 0]  # Only for when fan is running
-            if currents:  # Avoid error if list is empty
-                current_std = statistics.stdev(currents)
-                if current_std > 0.2:
-                    self.logger.warning(f"Potential bearing wear detected (std: {current_std:.2f}A)")
         except Exception as e:
             self.logger.error(f"Maintenance failed: {e}")
         finally:
-            self.ramp_to_speed(original_speed) # Go back to original speed.
+            self.ramp_to_speed(original_speed)
 
         self.performance_stats['maintenance_performed'] += 1
         self._last_maintenance = datetime.now()
         self.logger.info("Maintenance cycle completed")
 
-
-
     def get_current_metrics(self) -> Dict:
-        """Get current system metrics"""
+        """Get current system metrics."""
         temp = self.get_cpu_temp()
         load = self.get_system_load()
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        rpm = self.get_fan_rpm()  # Get the fan RPM
+        memory = psutil.virtual_memory().percent
+        disk = psutil.disk_usage('/').percent
+        rpm = self.get_fan_rpm()
 
         return {
             'timestamp': datetime.now(),
             'temperature': temp,
             'fan_speed': self.current_dc,
-            'fan_rpm': rpm,  # Add fan RPM
+            'fan_rpm': rpm,
             'cpu_load': load,
-            'memory_usage': memory.percent,
-            'disk_usage': disk.percent
+            'memory_usage': memory,
+            'disk_usage': disk
         }
-
     def get_status_page(self) -> str:
-        """Enhanced status page with charts and trends"""
+        """Generate the HTML status page."""
         metrics = self.get_current_metrics()
-        history = self.data_collector.get_metrics(1)  # Last hour
-
-        # Prepare chart data
+        history = self.data_collector.get_metrics(1)  # Last hour data
         timestamps = [m['timestamp'] for m in history]
         temps = [m['temperature'] for m in history]
         speeds = [m['fan_speed'] for m in history]
-        rpms = [m['fan_rpm'] for m in history] # Add RPMs for chart
+        rpms = [m['fan_rpm'] for m in history]
 
         return f"""
-        <html>
+       <html>
             <head>
                 <title>Fan Control Status</title>
                 <meta http-equiv="refresh" content="30">
@@ -589,24 +577,20 @@ class FanController:
                         <p>Fan Speed: {metrics['fan_speed']}%</p>
                         <p>Fan RPM: {metrics['fan_rpm']}</p>
                         <p>CPU Load: {metrics['cpu_load']:.1f}%</p>
+                        <p><a href="/logout">Logout</a></p>
                     </div>
-
                     <div class="card">
                         <canvas id="tempChart"></canvas>
                     </div>
-
                     <div class="card">
                         <canvas id="speedChart"></canvas>
                     </div>
-
                     <div class="card">
                         <canvas id="rpmChart"></canvas>
                     </div>
                 </div>
-
                 <script>
                     const timeLabels = {json.dumps(timestamps)};
-
                     new Chart(document.getElementById('tempChart'), {{
                         type: 'line',
                         data: {{
@@ -619,7 +603,6 @@ class FanController:
                             }}]
                         }}
                     }});
-
                     new Chart(document.getElementById('speedChart'), {{
                         type: 'line',
                         data: {{
@@ -633,11 +616,11 @@ class FanController:
                         }}
                     }});
 
-                    new Chart(document.getElementById('rpmChart'), {{
+                    new Chart(document.getElementById('rpmChart'),{{
                         type: 'line',
                         data: {{
                             labels: timeLabels,
-                            datasets: [{{
+                            datasets:[{{
                                 label: 'Fan RPM',
                                 data: {json.dumps(rpms)},
                                 borderColor: '#4bc0c0',
@@ -650,27 +633,44 @@ class FanController:
         </html>
         """
 
-    def handle_emergency(self, reason: str):
-      """Handles emergency situations, like sensor failures or overheating."""
-      self.logger.critical(f"Emergency shutdown triggered: {reason}")
-      self.performance_stats['emergency_shutdowns'] += 1
-      self.ramp_to_speed(100)  # Full speed in emergency
-      self.running = False
-      self.cleanup()
-      sys.exit(1) # Exit with error code.
 
+    def handle_emergency(self, reason: str):
+        """Handle emergencies."""
+        self.logger.critical(f"Emergency shutdown triggered: {reason}")
+        self.performance_stats['emergency_shutdowns'] += 1
+        self.ramp_to_speed(100)
+        self.running = False
+        self.cleanup()
+        sys.exit(1)
 
     def set_speed(self, speed: int):
-        """Sets the fan speed manually, entering manual mode."""
+        """Manually set fan speed."""
         if 0 <= speed <= 100:
-            self.manual_mode = True  # Ensure manual mode is enabled
+            self.manual_mode = True
             self.ramp_to_speed(speed)
             self.logger.info(f"Fan speed manually set to {speed}%")
         else:
-            self.logger.error("Invalid speed.  Must be between 0 and 100.")
+            self.logger.error("Invalid speed. Must be between 0 and 100.")
+
+    def calibrate_max_rpm(self):
+        """Calibrates the maximum fan RPM by running it at full speed."""
+        self.logger.info("Calibrating maximum fan RPM...")
+        self.ramp_to_speed(100)  # Full speed
+        time.sleep(5)  # Allow fan to reach max speed
+
+        rpm_readings = []
+        for _ in range(10):  # Take multiple readings
+            rpm_readings.append(self.get_fan_rpm())
+            time.sleep(0.1)
+
+        self.max_fan_rpm = max(rpm_readings)  # Use the *maximum* observed RPM
+        self.logger.info(f"Calibration complete. Maximum Fan RPM: {self.max_fan_rpm}")
+        self.ramp_to_speed(0)
+        # Best practice:  Write the calibrated value back to the .env file
+        #  (This part is a bit more advanced and optional)
 
     def run(self):
-        """Main control loop"""
+        """Main control loop."""
         self.logger.info("Starting fan controller...")
         try:
             while self.running:
@@ -680,49 +680,38 @@ class FanController:
                     target_speed = self.calculate_fan_speed(temp, load)
                     self.ramp_to_speed(target_speed)
 
-                    # Store and analyze temperature history
                     self.temp_history.append(temp)
                     if len(self.temp_history) > 100:
-                        self.temp_history.pop(0)  # Keep to a manageable size
+                        self.temp_history.pop(0)
                     self.analyze_temperature_trends()
 
-                    # Check for maintenance
                     if datetime.now() - self._last_maintenance > self.maintenance_interval:
                         self.perform_maintenance_cycle()
 
-                # Collect metrics, create MetricsData object, and add to queue
                 metrics_dict = self.get_current_metrics()
-                metrics_data = MetricsData(**metrics_dict)  # Create instance
-                self.data_collector.add_metrics(metrics_data)  # Pass object
+                metrics_data = MetricsData(**metrics_dict)
+                self.data_collector.add_metrics(metrics_data)
+                self.logger.debug(f"Temp: {metrics_dict['temperature']:.1f}°C, Speed: {self.current_dc}%, Load: {metrics_dict['cpu_load']:.1f}%, RPM: {metrics_dict['fan_rpm']}")
 
-                # Logging
-                log_message = (f"Temp: {metrics_dict['temperature']:.2f}°C, "
-                               f"Speed: {self.current_dc}%, Load: {metrics_dict['cpu_load']:.1f}%, "
-                               f"RPM: {metrics_dict['fan_rpm']}")
-                self.logger.debug(log_message)
-
-
-
-                time.sleep(2)  # Check every 2 seconds
+                time.sleep(2)
         except KeyboardInterrupt:
-          self.logger.info("Keyboard interrupt detected, shutting down.")
-          self.running= False
-          self.cleanup()
+            self.logger.info("Keyboard interrupt detected, shutting down.")
+            self.running = False
+            self.cleanup()
         finally:
             self.cleanup()
             self.logger.info("Fan controller stopped.")
 
-
+       
 
     def cleanup(self):
-        """Clean up GPIO and resources"""
+        """Clean up resources."""
         self.logger.info("Performing cleanup...")
         if self.pwm:
             self.pwm.stop()
-        GPIO.cleanup()
-        self.stop_monitoring_server() # close monitoring server
+        GPIO.cleanup()  # Clean up GPIO *before* exiting.
+        self.stop_monitoring_server()
         self.logger.info("Cleanup complete.")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -735,11 +724,15 @@ if __name__ == "__main__":
                         help='Perform full calibration cycle')
     parser.add_argument('--dump-config', action='store_true',
                         help='Display current configuration')
+    parser.add_argument('--calibrate-rpm', action='store_true',
+                        help='Calibrate the maximum fan RPM')
     args = parser.parse_args()
 
     try:
-        # Create FanController instance to initialize DataCollector/etc.
         controller = FanController(manual_mode=bool(args.set_speed))
+        if args.calibrate_rpm:
+            controller.calibrate_max_rpm()
+            sys.exit(0)  # Exit after calibration
 
         if args.calibrate:
             controller.perform_maintenance_cycle()
@@ -751,10 +744,9 @@ if __name__ == "__main__":
 
         if args.set_speed is not None:
             controller.set_speed(args.set_speed)
-            controller.run()  # Continue monitoring even in manual mode
-        else:
-            controller.run()
+
+        controller.run() # run the controller whether set speed manually or not.
 
     except Exception as e:
-        logging.error(f"Critical failure: {e}")  # Use the standard logger
+        logging.error(f"Critical failure: {e}")
         sys.exit(1)
